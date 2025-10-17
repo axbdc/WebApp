@@ -148,7 +148,7 @@
         function loadDragonModel() {
             const loader = new GLTFLoader();
             // Assuma que o seu dragão GLB está na pasta assets com o nome dragon.glb
-            loader.load('assets/dragon.glb', function (gltf) {
+            loader.load('dragon.glb', function (gltf) {
                 dragonModel = gltf.scene;
                 dragonModel.scale.set(0.5, 0.5, 0.5); // Ajuste a escala conforme necessário
                 dragonModel.visible = false;
@@ -167,7 +167,7 @@
                 addPlacementEventListener();
             }, undefined, function (error) {
                 console.error('Erro ao carregar o dragão:', error);
-                document.getElementById('message').textContent = "ERRO: Ficheiro 'assets/dragon.glb' não encontrado ou inválido.";
+                document.getElementById('message').textContent = "ERRO: Ficheiro 'dragon.glb' não encontrado ou inválido.";
             });
         }
 
