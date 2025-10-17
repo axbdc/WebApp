@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>WebAR Portal com Joystick (Single File)</title>
+    <title>WebAR Dragão Voador</title>
     
     <style>
         body { margin: 0; overflow: hidden; background-color: #000; }
@@ -41,7 +41,7 @@
             background: rgba(0, 0, 0, 0.3);
             z-index: 99; 
             display: none; /* Escondido até iniciar a sessão AR */
-            touch-action: none; /* Essencial para toque móvel */
+            touch-action: none; 
         }
 
         #joystick-handle {
@@ -61,7 +61,7 @@
     <div id="joystick-area">
         <div id="joystick-handle"></div>
     </div>
-    <div id="message">Toque no ecrã para posicionar o portal.</div>
+    <div id="message">Toque no ecrã para posicionar o Dragão.</div>
 
     <script type="importmap">
         {
@@ -81,8 +81,8 @@
         let camera, scene, renderer;
         let hitTestSource = null;
         let hitTestSourceRequested = false;
-        let portalPlaced = false;
-        let portalGroup;
+        let dragonPlaced = false;
+        let dragonModel; // O modelo do dragão
         let reticle;
         let mixer;
         const clock = new THREE.Clock();
@@ -131,10 +131,11 @@
             
             // Carregar elementos
             loadReticle();
-            loadPortalModel();
+            loadDragonModel();
         }
 
         function loadReticle() {
+            // Retículo para posicionamento
             reticle = new THREE.Mesh(
                 new THREE.RingGeometry(0.15, 0.2, 32).rotateX(-Math.PI / 2),
                 new THREE.MeshBasicMaterial()
@@ -144,32 +145,29 @@
             scene.add(reticle);
         }
 
-        function loadPortalModel() {
+        function loadDragonModel() {
             const loader = new GLTFLoader();
-            // Caminho para o seu GLB (A pasta assets é necessária)
-            loader.load('assets/portal_scene.glb', function (gltf) {
-                portalGroup = gltf.scene;
-                portalGroup.scale.set(0.5, 0.5, 0.5); // Ajuste a escala
-                portalGroup.visible = false;
-                
-                // --- 1. CONFIGURAÇÃO DO OCLUSOR ---
-                const occluder = portalGroup.getObjectByName('Occluder');
-                if (occluder) {
-                    occluder.material = new THREE.MeshBasicMaterial({
-                        colorWrite: false, // Injeta o buraco no mundo real
-                        depthWrite: true,
-                        side: THREE.BackSide 
-                    });
-                }
+            // Assuma que o seu dragão GLB está na pasta assets com o nome dragon.glb
+            loader.load('assets/dragon.glb', function (gltf) {
+                dragonModel = gltf.scene;
+                dragonModel.scale.set(0.5, 0.5, 0.5); // Ajuste a escala conforme necessário
+                dragonModel.visible = false;
 
-                // --- 2. CONFIGURAÇÃO DA ANIMAÇÃO DO DRAGÃO ---
-                mixer = new THREE.AnimationMixer(portalGroup);
+                // Configurar a Animação
+                mixer = new THREE.AnimationMixer(dragonModel);
                 if (gltf.animations.length > 0) {
+                    // Assume que a animação principal (voar/bater asas) é a primeira
                     mixer.clipAction(gltf.animations[0]).play();
+                    document.getElementById('message').textContent = "Dragão carregado. Procure uma superfície plana e toque no ecrã.";
+                } else {
+                     document.getElementById('message').textContent = "Dragão carregado, mas sem animações.";
                 }
 
-                scene.add(portalGroup);
+                scene.add(dragonModel);
                 addPlacementEventListener();
+            }, undefined, function (error) {
+                console.error('Erro ao carregar o dragão:', error);
+                document.getElementById('message').textContent = "ERRO: Ficheiro 'assets/dragon.glb' não encontrado ou inválido.";
             });
         }
 
@@ -179,17 +177,19 @@
         }
 
         function onTouchStart(event) {
-            if (portalPlaced || event.touches.length === 0) return;
+            if (dragonPlaced || event.touches.length === 0) return;
 
-            // Colocar o portal na posição do retículo
-            portalGroup.position.setFromMatrixPosition(reticle.matrix);
-            portalGroup.rotation.setFromRotationMatrix(reticle.matrix);
-            portalGroup.visible = true;
-            portalPlaced = true;
+            // Colocar o dragão na posição do retículo, mas flutuando um pouco acima do chão
+            dragonModel.position.setFromMatrixPosition(reticle.matrix);
+            dragonModel.rotation.setFromRotationMatrix(reticle.matrix);
+            dragonModel.position.y += 0.5; // Levanta o dragão 0.5 unidades do chão
+
+            dragonModel.visible = true;
+            dragonPlaced = true;
             reticle.visible = false;
-            document.getElementById('message').textContent = "Portal posicionado. Use o joystick para mover o dragão.";
+            document.getElementById('message').textContent = "Dragão em AR. Use o joystick para o mover.";
 
-            // Mudar para o controlo do joystick
+            // Ativar o controlo do joystick
             document.getElementById('joystick-area').style.display = 'block';
             renderer.domElement.removeEventListener('touchstart', onTouchStart);
             addJoystickListeners();
@@ -203,7 +203,6 @@
 
         // --- Lógica do Joystick ---
         function addJoystickListeners() {
-            // Usamos 'pointer' para compatibilidade com toque e rato
             joystickBase.addEventListener('pointerdown', handleStart);
             document.addEventListener('pointermove', handleMove);
             document.addEventListener('pointerup', handleEnd);
@@ -213,7 +212,7 @@
             isDragging = true;
             joystickStart.x = event.clientX;
             joystickStart.y = event.clientY;
-            joystickBase.setPointerCapture(event.pointerId); // Captura o toque
+            joystickBase.setPointerCapture(event.pointerId);
             event.preventDefault();
         }
 
@@ -229,13 +228,13 @@
             deltaX = Math.cos(angle) * distance;
             deltaY = Math.sin(angle) * distance;
             
-            // Atualizar o manípulo (handle) visualmente
+            // Atualizar o manípulo visualmente
             joystickHandle.style.left = `calc(50% + ${deltaX}px)`;
             joystickHandle.style.top = `calc(50% + ${deltaY}px)`;
             
-            // Guardar os valores normalizados (para rotação e movimento)
+            // Normalizar os valores de movimento
             joystickCurrent.x = deltaX / MAX_DRAG;
-            joystickCurrent.y = -deltaY / MAX_DRAG; // Y negativo = para a frente
+            joystickCurrent.y = -deltaY / MAX_DRAG; 
         }
 
         function handleEnd(event) {
@@ -243,7 +242,7 @@
             isDragging = false;
             joystickCurrent = { x: 0, y: 0 };
             
-            // Reposicionar o manípulo para o centro
+            // Reposicionar o manípulo
             joystickHandle.style.left = '50%';
             joystickHandle.style.top = '50%';
             joystickBase.releasePointerCapture(event.pointerId);
@@ -251,6 +250,7 @@
 
         // --- Loop de Animação Principal ---
         function animate(time, frame) {
+            // Animação (Asas a Bater)
             if (mixer) {
                 mixer.update(clock.getDelta());
             }
@@ -258,24 +258,28 @@
             if (frame) {
                 const session = renderer.xr.getSession();
 
-                if (portalPlaced) {
-                    // --- 3. CONTROLO DO DRAGÃO PELO JOYSTICK ---
-                    if (portalGroup && (joystickCurrent.x !== 0 || joystickCurrent.y !== 0)) {
+                if (dragonPlaced) {
+                    // --- CONTROLO DO DRAGÃO PELO JOYSTICK ---
+                    if (dragonModel && (joystickCurrent.x !== 0 || joystickCurrent.y !== 0)) {
                         const delta = clock.getDelta();
-                        const speed = 0.05 * delta;
                         
-                        // Rotação: controlada pelo arrasto X
-                        portalGroup.rotation.y += joystickCurrent.x * speed * 20; 
+                        // Velocidade base (ajustável)
+                        const speed = 0.5 * delta; 
                         
-                        // Movimento (Frente/Trás): controlado pelo arrasto Y
+                        // 1. Rotação (Eixo Y - Horizontal): controlo X do joystick
+                        dragonModel.rotation.y += joystickCurrent.x * speed * 2; 
+                        
+                        // 2. Movimento (Frente/Trás): controlo Y do joystick
                         const direction = new THREE.Vector3(0, 0, 1);
-                        direction.applyQuaternion(portalGroup.quaternion);
-                        portalGroup.position.addScaledVector(direction, -joystickCurrent.y * speed * 5);
+                        direction.applyQuaternion(dragonModel.quaternion);
+                        // Multiplicamos por 2 para um voo mais rápido
+                        dragonModel.position.addScaledVector(direction, -joystickCurrent.y * speed * 2);
                     }
                 }
                 
                 // Lógica do Hit-Testing (Posicionamento Inicial)
-                if (!portalPlaced) {
+                if (!dragonPlaced) {
+                    // Código para encontrar superfícies planas e mostrar o retículo
                     if (hitTestSourceRequested === false) {
                         session.requestReferenceSpace('viewer').then(function (referenceSpace) {
                             session.requestHitTestSource({ space: referenceSpace }).then(function (source) {
