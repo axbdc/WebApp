@@ -1,0 +1,308 @@
+<!DOCTYPE html>
+<html lang="pt">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WebAR Portal com Joystick (Single File)</title>
+    
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #000; }
+        canvas { display: block; }
+
+        #ar-button-container {
+            position: fixed;
+            bottom: 20px;
+            width: 100%;
+            text-align: center;
+            z-index: 100;
+        }
+
+        #message {
+            position: fixed;
+            top: 10px;
+            width: 100%;
+            color: white;
+            text-align: center;
+            font-family: sans-serif;
+            padding: 5px;
+            background: rgba(0, 0, 0, 0.5);
+            z-index: 100;
+        }
+
+        /* Estilos do Joystick Virtual */
+        #joystick-area {
+            position: fixed;
+            bottom: 50px;
+            left: 50px;
+            width: 150px;
+            height: 150px;
+            border: 2px solid rgba(255, 255, 255, 0.5);
+            border-radius: 50%;
+            background: rgba(0, 0, 0, 0.3);
+            z-index: 99; 
+            display: none; /* Escondido até iniciar a sessão AR */
+            touch-action: none; /* Essencial para toque móvel */
+        }
+
+        #joystick-handle {
+            position: absolute;
+            width: 50px;
+            height: 50px;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            border-radius: 50%;
+            background: rgba(255, 255, 255, 0.8);
+        }
+    </style>
+</head>
+<body>
+    <div id="ar-button-container"></div>
+    <div id="joystick-area">
+        <div id="joystick-handle"></div>
+    </div>
+    <div id="message">Toque no ecrã para posicionar o portal.</div>
+
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.165.0/build/three.module.js",
+                "three/addons/": "https://unpkg.com/three@0.165.0/examples/jsm/"
+            }
+        }
+    </script>
+    
+    <script type="module">
+        import * as THREE from 'three';
+        import { ARButton } from 'three/addons/webxr/ARButton.js';
+        import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+
+        // --- Variáveis Globais ---
+        let camera, scene, renderer;
+        let hitTestSource = null;
+        let hitTestSourceRequested = false;
+        let portalPlaced = false;
+        let portalGroup;
+        let reticle;
+        let mixer;
+        const clock = new THREE.Clock();
+
+        // Variáveis do Joystick
+        let joystickBase, joystickHandle;
+        let joystickStart = { x: 0, y: 0 };
+        let joystickCurrent = { x: 0, y: 0 };
+        let isDragging = false;
+        const MAX_DRAG = 50;
+        
+        // Iniciar a aplicação
+        init();
+
+        function init() {
+            scene = new THREE.Scene();
+            
+            // Configuração da Câmera e Renderer
+            camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.01, 20);
+            renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+            renderer.setPixelRatio(window.devicePixelRatio);
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.outputEncoding = THREE.sRGBEncoding;
+            renderer.xr.enabled = true;
+            document.body.appendChild(renderer.domElement);
+
+            // Luzes
+            scene.add(new THREE.HemisphereLight(0x606060, 0x404040, 1));
+            const light = new THREE.DirectionalLight(0xffffff, 0.5);
+            light.position.set(1, 1, 1).normalize();
+            scene.add(light);
+
+            // --- Configuração da Sessão AR ---
+            const arButton = ARButton.createButton(renderer, { 
+                requiredFeatures: ['hit-test', 'dom-overlay'],
+                domOverlay: { root: document.body }
+            });
+            document.getElementById('ar-button-container').appendChild(arButton);
+            renderer.setAnimationLoop(animate);
+            
+            // Elementos da UI
+            joystickBase = document.getElementById('joystick-area');
+            joystickHandle = document.getElementById('joystick-handle');
+
+            window.addEventListener('resize', onWindowResize);
+            
+            // Carregar elementos
+            loadReticle();
+            loadPortalModel();
+        }
+
+        function loadReticle() {
+            reticle = new THREE.Mesh(
+                new THREE.RingGeometry(0.15, 0.2, 32).rotateX(-Math.PI / 2),
+                new THREE.MeshBasicMaterial()
+            );
+            reticle.matrixAutoUpdate = false;
+            reticle.visible = false;
+            scene.add(reticle);
+        }
+
+        function loadPortalModel() {
+            const loader = new GLTFLoader();
+            // Caminho para o seu GLB (A pasta assets é necessária)
+            loader.load('assets/portal_scene.glb', function (gltf) {
+                portalGroup = gltf.scene;
+                portalGroup.scale.set(0.5, 0.5, 0.5); // Ajuste a escala
+                portalGroup.visible = false;
+                
+                // --- 1. CONFIGURAÇÃO DO OCLUSOR ---
+                const occluder = portalGroup.getObjectByName('Occluder');
+                if (occluder) {
+                    occluder.material = new THREE.MeshBasicMaterial({
+                        colorWrite: false, // Injeta o buraco no mundo real
+                        depthWrite: true,
+                        side: THREE.BackSide 
+                    });
+                }
+
+                // --- 2. CONFIGURAÇÃO DA ANIMAÇÃO DO DRAGÃO ---
+                mixer = new THREE.AnimationMixer(portalGroup);
+                if (gltf.animations.length > 0) {
+                    mixer.clipAction(gltf.animations[0]).play();
+                }
+
+                scene.add(portalGroup);
+                addPlacementEventListener();
+            });
+        }
+
+        // --- Funções de Eventos WebXR ---
+        function addPlacementEventListener() {
+            renderer.domElement.addEventListener('touchstart', onTouchStart);
+        }
+
+        function onTouchStart(event) {
+            if (portalPlaced || event.touches.length === 0) return;
+
+            // Colocar o portal na posição do retículo
+            portalGroup.position.setFromMatrixPosition(reticle.matrix);
+            portalGroup.rotation.setFromRotationMatrix(reticle.matrix);
+            portalGroup.visible = true;
+            portalPlaced = true;
+            reticle.visible = false;
+            document.getElementById('message').textContent = "Portal posicionado. Use o joystick para mover o dragão.";
+
+            // Mudar para o controlo do joystick
+            document.getElementById('joystick-area').style.display = 'block';
+            renderer.domElement.removeEventListener('touchstart', onTouchStart);
+            addJoystickListeners();
+        }
+
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        // --- Lógica do Joystick ---
+        function addJoystickListeners() {
+            // Usamos 'pointer' para compatibilidade com toque e rato
+            joystickBase.addEventListener('pointerdown', handleStart);
+            document.addEventListener('pointermove', handleMove);
+            document.addEventListener('pointerup', handleEnd);
+        }
+
+        function handleStart(event) {
+            isDragging = true;
+            joystickStart.x = event.clientX;
+            joystickStart.y = event.clientY;
+            joystickBase.setPointerCapture(event.pointerId); // Captura o toque
+            event.preventDefault();
+        }
+
+        function handleMove(event) {
+            if (!isDragging) return;
+
+            let deltaX = event.clientX - joystickStart.x;
+            let deltaY = event.clientY - joystickStart.y;
+            
+            const distance = Math.min(MAX_DRAG, Math.sqrt(deltaX * deltaX + deltaY * deltaY));
+            const angle = Math.atan2(deltaY, deltaX);
+            
+            deltaX = Math.cos(angle) * distance;
+            deltaY = Math.sin(angle) * distance;
+            
+            // Atualizar o manípulo (handle) visualmente
+            joystickHandle.style.left = `calc(50% + ${deltaX}px)`;
+            joystickHandle.style.top = `calc(50% + ${deltaY}px)`;
+            
+            // Guardar os valores normalizados (para rotação e movimento)
+            joystickCurrent.x = deltaX / MAX_DRAG;
+            joystickCurrent.y = -deltaY / MAX_DRAG; // Y negativo = para a frente
+        }
+
+        function handleEnd(event) {
+            if (!isDragging) return;
+            isDragging = false;
+            joystickCurrent = { x: 0, y: 0 };
+            
+            // Reposicionar o manípulo para o centro
+            joystickHandle.style.left = '50%';
+            joystickHandle.style.top = '50%';
+            joystickBase.releasePointerCapture(event.pointerId);
+        }
+
+        // --- Loop de Animação Principal ---
+        function animate(time, frame) {
+            if (mixer) {
+                mixer.update(clock.getDelta());
+            }
+
+            if (frame) {
+                const session = renderer.xr.getSession();
+
+                if (portalPlaced) {
+                    // --- 3. CONTROLO DO DRAGÃO PELO JOYSTICK ---
+                    if (portalGroup && (joystickCurrent.x !== 0 || joystickCurrent.y !== 0)) {
+                        const delta = clock.getDelta();
+                        const speed = 0.05 * delta;
+                        
+                        // Rotação: controlada pelo arrasto X
+                        portalGroup.rotation.y += joystickCurrent.x * speed * 20; 
+                        
+                        // Movimento (Frente/Trás): controlado pelo arrasto Y
+                        const direction = new THREE.Vector3(0, 0, 1);
+                        direction.applyQuaternion(portalGroup.quaternion);
+                        portalGroup.position.addScaledVector(direction, -joystickCurrent.y * speed * 5);
+                    }
+                }
+                
+                // Lógica do Hit-Testing (Posicionamento Inicial)
+                if (!portalPlaced) {
+                    if (hitTestSourceRequested === false) {
+                        session.requestReferenceSpace('viewer').then(function (referenceSpace) {
+                            session.requestHitTestSource({ space: referenceSpace }).then(function (source) {
+                                hitTestSource = source;
+                            });
+                        });
+                        session.addEventListener('end', () => { hitTestSourceRequested = false; hitTestSource = null; });
+                        hitTestSourceRequested = true;
+                    }
+
+                    if (hitTestSource) {
+                        const referenceSpace = renderer.xr.getReferenceSpace();
+                        const hitTestResults = frame.getHitTestResults(hitTestSource);
+
+                        if (hitTestResults.length) {
+                            const hit = hitTestResults[0];
+                            reticle.visible = true;
+                            reticle.matrix.fromArray(hit.getPose(referenceSpace).transform.matrix);
+                        } else {
+                            reticle.visible = false;
+                        }
+                    }
+                }
+            }
+            
+            renderer.render(scene, camera);
+        }
+    </script>
+</body>
+</html>
